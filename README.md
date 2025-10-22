@@ -91,6 +91,14 @@ bash refresh_feeds.sh
 python3 dedupe_bbc_sport.py
 ```
 
-```bash
+Logs for each script are written to the logs/ directory for traceability.
 
-```
+## Security Considerations
+
+Secrets are never stored in the repository or on disk in plaintext.
+
+All sensitive values are retrieved dynamically from Bitwarden Secrets Manager using the `bws` CLI.
+
+Each script validates environment variables and connection credentials before execution.
+
+For production use, ensure Bitwarden credentials are restricted to least privilege.
