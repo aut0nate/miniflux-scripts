@@ -1,0 +1,30 @@
+# ============================================================
+# Example Miniflux Feed Filter Configuration
+# ============================================================
+# Copy this file to `filters.yaml` and customise it with your own feeds.
+# Each feed entry should map a feed ID (as seen in Miniflux) to its filter rules.
+# Rules use Miniflux-compatible RE2 regular expressions.
+# ============================================================
+
+482:
+  name: "BBC Football"
+  feed_url: "https://feeds.bbci.co.uk/sport/football/rss.xml?edition=uk"
+  block_rules:
+    # Exclude transfer gossip articles
+    - EntryTitle=(?i)\b(gossip)\b
+
+    # Block URLs pointing to BBC iPlayer or Sounds
+    - EntryURL=(?i)\bhttps?:\/\/(?:www\.)?bbc\.(?:co\.uk|com)\/(?:iplayer|sounds)(?:\/|$|\?)\b
+
+481:
+  name: "BBC Sport"
+  feed_url: "https://feeds.bbci.co.uk/sport/rss.xml?edition=uk"
+  block_rules:
+    # Exclude articles older than one day
+    - EntryDate=max-age:1d
+
+    # Block content from non-football sports sections
+    - EntryURL=(?i)^https?:\/\/(?:www\.)?bbc\.(?:co\.uk|com)\/sport\/(?:cricket|rugby-union|rugby-league|golf|motorsport|tennis|athletics|cycling)(?:\/|$|\?)
+
+    # Exclude articles linking to BBC iPlayer or Sounds
+    - EntryURL=(?i)\bhttps?:\/\/(?:www\.)?bbc\.(?:co\.uk|com)\/(?:iplayer|sounds)(?:\/|$|\?)\b
