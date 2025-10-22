@@ -11,3 +11,7 @@ logs/
 # Python cache
 __pycache__/
 *.pyc
+
+# Ignore personal feed filters
+config/filters.yaml
+
