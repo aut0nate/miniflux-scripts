@@ -18,7 +18,7 @@ import miniflux
 FEED_IDS = [481, 482]  # BBC Sport feed IDs
 SENSITIVITY = 88       # Similarity threshold
 DELETE_MODE = False    # False = mark "read", True = remove
-LOG_FILE = Path("/home/nathan/scripts/miniflux/logs/dedupe_bbc_sport.log")
+LOG_FILE = Path("$HOME/scripts/miniflux/logs/dedupe_bbc_sport.log")
 MAX_LOG_LINES = 100
 
 # Bitwarden Secret IDs
