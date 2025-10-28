@@ -18,7 +18,7 @@ import miniflux
 FEED_IDS = [481, 482]  # BBC Sport feed IDs
 SENSITIVITY = 88       # Similarity threshold
 DELETE_MODE = False    # False = mark "read", True = remove
-LOG_FILE = Path("$HOME/scripts/miniflux/logs/dedupe_bbc_sport.log")
+LOG_FILE = Path("/home/nathan/scripts/miniflux/logs/dedupe_bbc_sport.log")
 MAX_LOG_LINES = 100
 
 # Bitwarden Secret IDs
@@ -94,56 +94,52 @@ except Exception as e:
     log(f"❌ Failed to connect to Miniflux: {e}")
     raise SystemExit(1)
 
-# ---- MAIN LOGIC ----
+# ---- MAIN LOGIC (cross-feed deduplication) ----
 
-def find_duplicates(feed_id: int, sensitivity: int = 88):
-    """Identify and handle duplicate entries."""
-    dupe_ids, dupe_titles, seen_titles = [], [], []
+def fetch_unread_entries(feed_ids):
+    """Fetch unread entries from multiple feeds."""
+    all_entries = []
+    for fid in feed_ids:
+        entries = client.get_feed_entries(feed_id=fid, order="id", direction="asc", status=["unread"])
+        count = len(entries.get("entries", []))
+        log(f"🔍 Checking feed {fid} ({count} unread entries)...")
+        all_entries.extend(entries.get("entries", []))
+    return all_entries
 
-    entries = client.get_feed_entries(
-        feed_id=feed_id,
-        order="id",
-        direction="asc",
-        status=["unread"],
-    )
 
-    log(f"🔍 Checking feed {feed_id} ({len(entries['entries'])} unread entries)...")
+def find_cross_feed_duplicates(entries, sensitivity=88):
+    """Find duplicates across multiple feeds."""
+    dupe_ids = []
+    seen_titles = []  # (cleaned_title, entry_id, original_title, feed_id)
 
-    for entry in entries["entries"]:
-        processed = clean_title(entry["title"])
+    for entry in entries:
+        cleaned = clean_title(entry["title"])
 
-        # Check for exact matches
-        if any(processed == t for t, _ in seen_titles):
-            dupe_ids.append(entry["id"])
-            dupe_titles.append(entry["title"])
-            continue
-
-        # Check for fuzzy matches
+        # Try to find a near match in previously seen titles
         match = next(
-            (t for t, _ in seen_titles if fuzz.token_sort_ratio(processed, t) >= sensitivity),
+            ((t, fid) for (t, _, _, fid) in seen_titles if fuzz.token_sort_ratio(cleaned, t) >= sensitivity),
             None
         )
+
         if match:
             dupe_ids.append(entry["id"])
-            dupe_titles.append(entry["title"])
+            log(f"🧩 Duplicate found between feeds (match in feed {match[1]}): '{entry['title']}'")
         else:
-            seen_titles.append((processed, entry["id"]))
+            seen_titles.append((cleaned, entry["id"], entry["title"], entry["feed"]["id"]))
 
-    # Handle duplicates
     if dupe_ids:
         status = "removed" if DELETE_MODE else "read"
-        log(f"🧹 Feed {feed_id}: {len(dupe_ids)} duplicates -> mark {status}")
+        log(f"🧹 Found {len(dupe_ids)} duplicates across feeds -> mark {status}")
         try:
             client.update_entries(dupe_ids, status=status)
         except Exception as e:
-            log(f"⚠️ Error updating entries for feed {feed_id}: {e}")
-        if dupe_titles:
-            log(f"   Examples: {', '.join(dupe_titles[:3])}{' ...' if len(dupe_titles) > 3 else ''}")
+            log(f"⚠️ Error updating entries: {e}")
     else:
-        log(f"ℹ️ No duplicates found in feed {feed_id}")
+        log("ℹ️ No cross-feed duplicates found")
+
 
 # ---- RUN ----
-for feed_id in FEED_IDS:
-    find_duplicates(feed_id, SENSITIVITY)
+entries = fetch_unread_entries(FEED_IDS)
+find_cross_feed_duplicates(entries, SENSITIVITY)
 
 log(f"✅ Run completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
