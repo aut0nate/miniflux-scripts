@@ -3,7 +3,8 @@
 # Miniflux Feed Filter Updater
 # ---------------------------------------------------------------
 # Updates feed filter rules using Miniflux API.
-# Designed to run under run-all.sh with shared logging and BW env.
+# Designed to run under run-all.sh (Bitwarden env + shared logs).
+# Logs centrally and trims when exceeding 5 MB.
 # ===============================================================
 
 set -euo pipefail
@@ -12,13 +13,15 @@ set -euo pipefail
 LOG_DIR="/home/nathan/scripts/logs"
 LOG_FILE="$LOG_DIR/sync_filters.log"
 CONFIG="/home/nathan/scripts/miniflux/config/filters.yaml"
+UPDATED_FEEDS_TMP="$LOG_DIR/sync_filters_updated.tmp"
 MINIFLUX_URL_ID="da481d5f-140a-4ff6-8d89-b37e00c5b84f"
 MINIFLUX_TOKEN_ID="b5f9eed2-b3ed-4d9c-8f58-b37e00c03041"
-MAX_LOG_SIZE=$((5 * 1024 * 1024)) # 5MB
+MAX_LOG_SIZE=$((5 * 1024 * 1024)) # 5 MB
 
 mkdir -p "$LOG_DIR"
+: > "$UPDATED_FEEDS_TMP"  # clear temp file
 
-# --- Logging helper ---
+# --- Logging helpers ---
 log() {
   local ts msg
   ts="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -26,7 +29,6 @@ log() {
   echo "$msg" | tee -a "$LOG_FILE"
 }
 
-# --- Log trimming helper (5MB cap) ---
 trim_log() {
   if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE")" -gt "$MAX_LOG_SIZE" ]; then
     tail -n 500 "$LOG_FILE" > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE"
@@ -65,6 +67,7 @@ MINIFLUX_URL="${MINIFLUX_URL%/v1}"
 # --- Sanity check ---
 [ -f "$CONFIG" ] || { log "❌ Config not found: $CONFIG"; exit 1; }
 
+log "🚀 Starting Miniflux Filter Sync..."
 log "🔐 Using Bitwarden secrets for configuration"
 log "📘 Reading config: $CONFIG"
 log "📏 Config size: $(stat -c%s "$CONFIG") bytes"
@@ -95,9 +98,17 @@ while IFS= read -r entry; do
        -d "$(jq -n --arg b "$BLOCK_RULES" '{block_filter_entry_rules:$b}')"
 
   log "  ✅ Updated feed $FEED_ID ($FEED_NAME)"
+  echo "$FEED_NAME" >> "$UPDATED_FEEDS_TMP"
   UPDATED_COUNT=$((UPDATED_COUNT + 1))
   trim_log
 done < <(yq eval -o=json --no-doc "$CONFIG" | jq -c '.feeds? // {} | to_entries[]')
 
-log "✅ Filter sync completed. Updated $UPDATED_COUNT feed(s)."
+# --- Summary ---
+if [ "$UPDATED_COUNT" -gt 0 ]; then
+  log "🎉 Filter sync completed. Updated $UPDATED_COUNT feed(s)."
+  log "📋 Updated feeds:"
+  sort "$UPDATED_FEEDS_TMP" | uniq | sed 's/^/  - /' | tee -a "$LOG_FILE"
+else
+  log "✅ Filter sync completed. No updates required."
+fi
 trim_log
