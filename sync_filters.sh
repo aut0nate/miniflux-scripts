@@ -3,7 +3,7 @@
 # Miniflux Feed Filter Updater
 # ---------------------------------------------------------------
 # Syncs block filter rules from filters.yaml into Miniflux.
-# Runs every 15 minutes via cron.
+# Logs timestamped "Time - Event" entries only.
 # ===============================================================
 
 set -euo pipefail
@@ -12,45 +12,57 @@ set -euo pipefail
 # Bootstrap
 # --------------------------------------------------
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/../lib/common.sh"
+LOG_FILE="/home/nathan/scripts/logs/sync_filters.log"
 
-log_init
-log_rotate
+# shellcheck source=/home/nathan/scripts/lib/common.sh
+. "$SCRIPT_DIR/../lib/common.sh"
+
+rotate_logs
+log "Starting Miniflux filter sync"
 
 # --------------------------------------------------
 # Config
 # --------------------------------------------------
 CONFIG="$SCRIPT_DIR/config/filters.yaml"
-UPDATED_FEEDS_TMP="$LOG_ROOT/sync_filters.log"
 
 MINIFLUX_URL_ID="da481d5f-140a-4ff6-8d89-b37e00c5b84f"
 MINIFLUX_TOKEN_ID="b5f9eed2-b3ed-4d9c-8f58-b37e00c03041"
 
-: > "$UPDATED_FEEDS_TMP"
+# --------------------------------------------------
+# Dependency checks (explicit, no magic helpers)
+# --------------------------------------------------
+for cmd in bws jq yq curl; do
+  command -v "$cmd" >/dev/null 2>&1 || {
+    log "❌ Missing dependency: $cmd"
+    exit 1
+  }
+done
 
 # --------------------------------------------------
-# Checks
+# Bitwarden + secrets
 # --------------------------------------------------
-require_cmds bws jq yq curl
 require_bws
 
-[ -f "$CONFIG" ] || { log "❌ Config not found: $CONFIG"; exit 1; }
-
-# --------------------------------------------------
-# Secrets
-# --------------------------------------------------
-MINIFLUX_URL="$(get_secret "$MINIFLUX_URL_ID")"
+RAW_MINIFLUX_URL="$(get_secret "$MINIFLUX_URL_ID")"
 MINIFLUX_TOKEN="$(get_secret "$MINIFLUX_TOKEN_ID")"
 
-MINIFLUX_URL="${MINIFLUX_URL%/}"
+# Normalise URL (allow /v1 in secret)
+MINIFLUX_URL="${RAW_MINIFLUX_URL%/}"
 MINIFLUX_URL="${MINIFLUX_URL%/v1}"
 
+if [[ "$RAW_MINIFLUX_URL" != "$MINIFLUX_URL" ]]; then
+  log "Normalised Miniflux URL (stripped /v1)"
+fi
+
 # --------------------------------------------------
-# Start
+# Sanity check
 # --------------------------------------------------
-log "🚀 Starting Miniflux filter sync"
-log "📘 Config: $CONFIG"
-log "📏 Config size: $(stat -c%s "$CONFIG") bytes"
+if [[ ! -f "$CONFIG" ]]; then
+  log "❌ Config not found: $CONFIG"
+  exit 1
+fi
+
+log "Using config: $CONFIG"
 
 UPDATED_COUNT=0
 
@@ -63,7 +75,6 @@ yq eval -o=json --no-doc "$CONFIG" \
 
   FEED_ID="$(jq -r '.key' <<<"$entry")"
   FEED_NAME="$(jq -r '.value.name // "Unnamed Feed"' <<<"$entry")"
-  FEED_URL="$(jq -r '.value.feed_url // "N/A"' <<<"$entry")"
 
   BLOCK_RULES="$(
     jq -r '
@@ -72,7 +83,7 @@ yq eval -o=json --no-doc "$CONFIG" \
     ' <<<"$entry"
   )"
 
-  log "🔍 Checking feed $FEED_ID ($FEED_NAME)"
+  log "Checking feed: $FEED_NAME ($FEED_ID)"
 
   CURRENT_RULES="$(
     curl -fsS \
@@ -81,8 +92,8 @@ yq eval -o=json --no-doc "$CONFIG" \
     | jq -r '.block_filter_entry_rules // ""'
   )"
 
-  if [ "$BLOCK_RULES" = "$CURRENT_RULES" ]; then
-    log "  → No changes"
+  if [[ "$BLOCK_RULES" == "$CURRENT_RULES" ]]; then
+    log "No changes for feed: $FEED_NAME"
     continue
   fi
 
@@ -93,8 +104,7 @@ yq eval -o=json --no-doc "$CONFIG" \
     -d "$(jq -n --arg b "$BLOCK_RULES" '{block_filter_entry_rules:$b}')" \
     "$MINIFLUX_URL/v1/feeds/$FEED_ID"
 
-  log "  ✅ Updated feed: $FEED_NAME"
-  echo "$FEED_NAME" >> "$UPDATED_FEEDS_TMP"
+  log "Updated filter rules for feed: $FEED_NAME"
   UPDATED_COUNT=$((UPDATED_COUNT + 1))
 
 done
@@ -102,9 +112,8 @@ done
 # --------------------------------------------------
 # Summary
 # --------------------------------------------------
-if [ "$UPDATED_COUNT" -gt 0 ]; then
-  log "🎉 Sync complete — updated $UPDATED_COUNT feed(s)"
-  sort -u "$UPDATED_FEEDS_TMP" | sed 's/^/  - /' | tee -a "$LOG_FILE"
+if [[ "$UPDATED_COUNT" -gt 0 ]]; then
+  log "Filter sync complete — updated $UPDATED_COUNT feed(s)"
 else
-  log "✅ Sync complete — no updates required"
+  log "Filter sync complete — no updates required"
 fi

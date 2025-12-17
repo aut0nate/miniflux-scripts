@@ -1,29 +1,34 @@
 #!/usr/bin/env python3
 """
-BBC Sport Deduplicator (Feed ID 621)
+BBC Sport Deduplicator
 
 - Groups entries by normalised title
 - Keeps the oldest published entry
 - Marks newer duplicates as read
-- Uses shared helpers for logging and secrets
+- Logs one timestamped event per duplicate marked as read
 """
 
 import re
 import sys
 from collections import defaultdict
-from datetime import datetime
-from pathlib import Path
+
 import miniflux
 
+# --------------------------------------------------
 # Make shared helpers importable
+# --------------------------------------------------
 sys.path.append("/home/nathan/scripts/lib")
-from common import setup_logging, log, get_secret
+from common import (
+    log,
+    get_secret,
+    require_bws,
+    rotate_logs,
+)
 
 # --------------------------------------------------
 # Configuration
 # --------------------------------------------------
-SCRIPT_NAME = "bbc_sport_dedup"
-FEED_ID = 621
+FEED_ID = 621   # BBC Sport
 ACTION = "read"
 DRY_RUN = False
 
@@ -31,92 +36,86 @@ MINIFLUX_URL_ID = "da481d5f-140a-4ff6-8d89-b37e00c5b84f"
 MINIFLUX_TOKEN_ID = "b5f9eed2-b3ed-4d9c-8f58-b37e00c03041"
 
 # --------------------------------------------------
-# Logging
-# --------------------------------------------------
-LOG_FILE = setup_logging(SCRIPT_NAME)
-
-# --------------------------------------------------
 # Helpers
 # --------------------------------------------------
 def normalise_title(title: str) -> str:
     title = title.lower()
+    title = re.sub(r"[^\w\s]", "", title)
     title = re.sub(r"\s+", " ", title)
     return title.strip()
 
-def parse_ts(ts: str) -> datetime:
-    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+def normalise_miniflux_url(url: str) -> str:
+    url = url.rstrip("/")
+    if url.endswith("/v1"):
+        return url[:-3]
+    return url
+
 
 # --------------------------------------------------
-# Load credentials
+# Main
 # --------------------------------------------------
-log(LOG_FILE, "🔐 Loading Miniflux credentials from Bitwarden...")
+def main():
+    rotate_logs()
+    log("Loading Miniflux credentials from Bitwarden")
 
-MINIFLUX_URL = get_secret(MINIFLUX_URL_ID).rstrip("/")
-MINIFLUX_URL = MINIFLUX_URL.removesuffix("/v1")
-MINIFLUX_TOKEN = get_secret(MINIFLUX_TOKEN_ID)
+    require_bws()
+
+    raw_url = get_secret(MINIFLUX_URL_ID)
+    miniflux_url = normalise_miniflux_url(raw_url)
+    miniflux_token = get_secret(MINIFLUX_TOKEN_ID)
+
+    if raw_url != miniflux_url:
+        log("Normalised Miniflux URL (stripped /v1)")
+
+    client = miniflux.Client(miniflux_url, api_key=miniflux_token)
+
+    log("Connected to Miniflux")
+    log("Fetching unread BBC Sport entries")
+
+    response = client.get_entries(feed_id=FEED_ID, status="unread")
+    entries = response.get("entries", [])
+
+    if not entries:
+        log("No unread entries found")
+        return
+
+    grouped = defaultdict(list)
+
+    for entry in entries:
+        title = entry.get("title", "")
+        if not title:
+            continue
+        grouped[normalise_title(title)].append(entry)
+
+    duplicates = []
+
+    for group in grouped.values():
+        if len(group) > 1:
+            group.sort(key=lambda e: e.get("published_at") or "")
+            duplicates.extend(group[1:])
+
+    if not duplicates:
+        log("No duplicate entries found")
+        return
+
+    if DRY_RUN:
+        for entry in duplicates:
+            log(f"DRY-RUN – would mark as read: {entry.get('title', 'Untitled')}")
+        return
+
+    client.update_entries([e["id"] for e in duplicates], status="read")
+
+    for entry in duplicates:
+        log(f"Marked duplicate as read: {entry.get('title', 'Untitled')}")
+
 
 # --------------------------------------------------
-# Connect to Miniflux
+# Entrypoint
 # --------------------------------------------------
-try:
-    client = miniflux.Client(MINIFLUX_URL, api_key=MINIFLUX_TOKEN)
-    client.get_feeds()
-    log(LOG_FILE, "✅ Connected to Miniflux.")
-except Exception as e:
-    log(LOG_FILE, f"❌ Miniflux connection failed: {e}")
-    sys.exit(1)
-
-# --------------------------------------------------
-# Fetch unread entries
-# --------------------------------------------------
-log(LOG_FILE, "🔍 Fetching unread BBC Football entries...")
-
-response = client.get_feed_entries(
-    feed_id=FEED_ID,
-    status="unread",
-    order="published_at",
-    direction="asc",
-)
-
-entries = response.get("entries", [])
-log(LOG_FILE, f"Found {len(entries)} unread entries.")
-
-# --------------------------------------------------
-# Deduplication
-# --------------------------------------------------
-groups = defaultdict(list)
-to_update = []
-
-for entry in entries:
-    key = normalise_title(entry["title"])
-    groups[key].append(entry)
-
-for items in groups.values():
-    if len(items) < 2:
-        continue
-
-    items.sort(key=lambda e: parse_ts(e["published_at"]))
-
-    for dup in items[1:]:
-        ts = parse_ts(dup["published_at"]).strftime("%Y-%m-%d %H:%M")
-        log(LOG_FILE, f"{ts} - {dup['title']}")
-        to_update.append(dup["id"])
-
-# --------------------------------------------------
-# Apply changes
-# --------------------------------------------------
-if not to_update:
-    log(LOG_FILE, "✅ No duplicates found.")
-    sys.exit(0)
-
-log(LOG_FILE, f"🧹 {len(to_update)} duplicate entries will be marked as '{ACTION}'")
-
-if DRY_RUN:
-    log(LOG_FILE, "⚠️ DRY RUN enabled — no changes made.")
-else:
+if __name__ == "__main__":
     try:
-        client.update_entries(to_update, status=ACTION)
-        log(LOG_FILE, "✅ Deduplication complete.")
+        main()
     except Exception as e:
-        log(LOG_FILE, f"❌ Failed to update entries: {e}")
-        sys.exit(1)
+        log(f"Script failed: {e}")
+        raise
